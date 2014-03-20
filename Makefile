@@ -5,8 +5,8 @@ DUDE_TARGET=attiny2313
 DUDE_PROG=stk500v2
 AVRDUDE=avrdude
 PORT=/dev/ttyUSB0
-override CFLAGS=-Wall -g -Os -mmcu=${MCU_TARGET}
-override LDFLAGS=
+override CFLAGS=-Wall -g -Os -mmcu=${MCU_TARGET} -std=gnu99
+override LDFLAGS=-Os
 
 %.o: %.c
 	${CC} ${CFLAGS} -c $<
@@ -14,10 +14,10 @@ override LDFLAGS=
 %.elf: %.o
 	${LD} ${LDFLAGS} -Map $@.map -o $@ $< /usr/lib/avr/lib/avr25/libc.a /usr/lib/avr/lib/avr25/crttn2313a.o
 
-%.lst: %.elf
+%.elf.lst: %.elf
 	avr-objdump -h -S $< > $@
 
-%.lst: %.o
+%.o.lst: %.o
 	avr-objdump -h -S $< > $@
 
 %.hex: %.elf
