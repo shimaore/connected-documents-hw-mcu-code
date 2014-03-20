@@ -1,0 +1,29 @@
+
+Pins assignments
+
+Base:
+  - need USART
+  - need USI three-wire
+  - need two ports for chip select of RAM / Flash
+
+
+  1   PA2
+  2   RxD (USART)
+  3   TxD (USART)
+  4   XTAL2 (Output)
+  5   XTAL1 (Input)
+  6   XCK?
+  7
+  8
+  9   OC0B (PWM 8 bits)
+  10  GND
+  11
+  12
+  13
+  14  OC0A
+  15  OC1A
+  16  OC1B (PWM)
+  17  DI (USI three-wire)
+  18  DO (USI three-wire)
+  19  USCK (USI three-wire)
+  20  Vcc
