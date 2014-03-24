@@ -131,9 +131,9 @@ bool usart_send( byte t ) {
  */
 
 #define CS_RAM_PORT PORTD
-#define CS_RAM_PIN  PORTD1
+#define CS_RAM_PIN  PORTD2
 #define CS_FLASH_PORT PORTD
-#define CS_FLASH_PIN  PORTD2
+#define CS_FLASH_PIN  PORTD3
 
 inline void clear_bit_CS_RAM() {
   CS_RAM_PORT &= ~_BV(CS_RAM_PIN);
