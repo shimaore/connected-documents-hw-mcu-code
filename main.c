@@ -72,16 +72,25 @@ enum {
   ADDR_RAM   = 0x20000000
 };
 
+enum {
+  MODE_FLASH = 0x10,
+  MODE_RAM   = 0x20,
+
+  MODE_MASK  = 0x0f
+};
+
 /* Forth Interrupt Block layout */
 
 enum {
-  interrupt_reset = 0 | ADDR_FLASH,
-  interrupt_usart = 4 | ADDR_FLASH,
+  forth_interrupt_reset = 0 | ADDR_FLASH,
+  forth_interrupt_usart = 4 | ADDR_FLASH,
 };
 
 /* Run Forth reset when AVR resets. */
 
-word interrupt = interrupt_reset;
+word forth_interrupt = forth_interrupt_reset;
+
+/************************ USART *******************************/
 
 /* Bluetooth interface uses the USART in RS-232 mode. */
 
@@ -91,21 +100,21 @@ word interrupt = interrupt_reset;
  * - HM-10 uses 
  */
 
-void init_usart() {
+void usart_init() {
   UCSRB = (1<<RXCIE)|(1<<RXEN)|(1<<TXEN);
   UCSRC = (3<<UCSZ0); // 8 bits
   usart_9600();
 }
 
 /* USART "buffer" (single char for now) */
-char received = 0;
+uint8_t received = 0;
 
 ISR( USART_RX_vect, ISR_BLOCK ) {
   /* Get the (inbound) character from the USART. */
   received = UDR;
 
   /* Set Forth interrupt */
-  interrupt = interrupt_usart;
+  forth_interrupt = forth_interrupt_usart;
 }
 
 bool usart_send( byte t ) {
@@ -130,6 +139,13 @@ bool usart_send( byte t ) {
  * See also App Note http://www.atmel.com/Images/doc2542.pdf for filtering (R in series, C between output of R and ground, R=10k, C=100nF for crossover frequency of 1kHz (low-pass filter)).
  */
 
+void pwm_init() {
+}
+
+
+
+/*********************** Flash/RAM SPI interface ********************************/
+
 #define CS_RAM_PORT PORTD
 #define CS_RAM_PIN  PORTD2
 #define CS_FLASH_PORT PORTD
@@ -151,29 +167,6 @@ inline void set_bit_CS_FLASH() {
   CS_FLASH_PORT |= _BV(CS_FLASH_PIN);
 }
 
-
-/* Flash/RAM SPI interface */
-
-#define spi_mode(addr) ((byte)(addr >> 24))
-
-void spi_start( byte mode ) {
-  switch( mode & 0xf0 ) {
-    case 0x10: // ADDR_FLASH >> 24
-      clear_bit_CS_FLASH();
-      break;
-    case 0x20: // ADDR_RAM >> 24
-      clear_bit_CS_RAM();
-      break;
-  }
-  cli();
-}
-
-void spi_stop() {
-  sei();
-  set_bit_CS_RAM();
-  set_bit_CS_FLASH();
-}
-
 uint8_t byte_SPI( uint8_t value ) {
   USIDR = value;
 
@@ -190,9 +183,72 @@ uint8_t byte_SPI( uint8_t value ) {
   return USIDR;
 }
 
+/* Instructions for 23K256-IS/N */
+#define RAM_READ            0x03
+#define RAM_WRITE           0x02
+#define RAM_RDSR            0x05
+#define RAM_WRSR            0x01
+
+#define RAM_SEQUENTIAL_MODE 0x40
+#define RAM_ENABLE_HOLD     0x00
+#define RAM_DISABLE_HOLD    0x01
+
+void spi_init() {
+  // Set the SRAM to Sequential Mode (bit 7/6 = 01); also enable HOLD (bit 0 = 0).
+  clear_bit_CS_RAM(); // Chip Select RAM
+  cli();
+  byte_SPI(RAM_WRSR); // Write Status Register
+  byte_SPI(RAM_SEQUENTIAL_MODE | RAM_ENABLE_HOLD);
+  set_bit_CS_RAM(); // Chip unSelect RAM
+
+  // TODO: Configure the Flash
+  clear_bit_CS_FLASH(); // Chip Select Flash
+
+  set_bit_CS_FLASH(); // Chip unSelect Flash
+
+  // Re-enable interrupts
+  sei();
+}
+
+void spi_start( byte mode ) {
+  switch( mode & MODE_MASK ) {
+    case MODE_FLASH:
+      clear_bit_CS_FLASH();
+      break;
+    case MODE_RAM:
+      clear_bit_CS_RAM();
+      break;
+  }
+  cli();
+}
+
+void spi_address( byte mode, word target ) {
+  switch( mode & MODE_MASK ) {
+    case MODE_FLASH:
+      byte_SPI((target>>16)&0xff);
+      byte_SPI((target>>8)&0xff);
+      byte_SPI((target)&0xff);
+      break;
+    case MODE_RAM:
+      byte_SPI((target>>8)&0xff);
+      byte_SPI((target)&0xff);
+      break;
+  }
+}
+
+void spi_stop() {
+  sei();
+  set_bit_CS_RAM();
+  set_bit_CS_FLASH();
+}
+
+#define spi_mode(addr) ((byte)(addr >> 24))
+
 void spi_read(pointer target, external_pointer start, byte length ) {
   spi_start(spi_mode(start));
-  // TODO: send command & send address
+  // send command & send address
+  byte_SPI(0x03);
+  spi_address(spi_mode(start),start);
   while(length--) {
     *(target++) = byte_SPI(0);
   }
@@ -201,14 +257,16 @@ void spi_read(pointer target, external_pointer start, byte length ) {
 
 void spi_write(pointer source, external_pointer start, byte length ) {
   spi_start(spi_mode(start));
-  // TODO: send command & send address
+  // send command & send address
+  byte_SPI(0x04);
+  spi_address(spi_mode(start),start);
   while(length--) {
     byte_SPI(*(source++));
   }
   spi_stop();
 }
 
-/* Higher-level access methods */
+/* Higher-level SPI access methods */
 word read_word( external_pointer p ) {
   word w;
   spi_read((pointer)&w,p,sizeof(w));
@@ -238,64 +296,81 @@ void write_byte( external_pointer p, byte b ) {
 
 enum { rp0 = 0x1000, sp0 = 0x2000, pad = 0x2000 };
 
-typedef struct {
-  external_pointer p;
-} stack;
-
-word top(stack* s) {
-  return read_word(s->p);
-}
-
-void set_top(stack* s, word r) {
-  write_word(s->p,r);
-}
-
-word top2(stack* s) {
-  return read_word(s->p+sizeof(word));
-}
-
-void set_top2(stack* s, word r) {
-  write_word(s->p+sizeof(word),r);
-}
-
-void push(stack* s, word r) {
-  s->p -= sizeof(word);
-  write_word(s->p,r);
-}
-
-word pop(stack* s) {
-  word w = read_word(s->p);
-  s->p += sizeof(word);
-  return w;
-}
+typedef external_pointer stack;
 
 const word FORTH_FALSE = 0;
 const word FORTH_TRUE = ~0;
 
 int main() {
-  init_usart();
+  usart_init();
+  spi_init();
 
-  stack R = { p: (external_pointer)(rp0 | ADDR_RAM) };
-  stack S = { p: (external_pointer)(sp0 | ADDR_RAM) };
+  stack s = (stack)(sp0 | ADDR_RAM);
+  stack r = (stack)(rp0 | ADDR_RAM);
+
+  inline word top() {
+    return read_word(s);
+  }
+
+  inline void set_top(word w) {
+    write_word(s,w);
+  }
+
+  word top2() {
+    return read_word(s+sizeof(word));
+  }
+
+  void set_top2(word w) {
+    write_word(s+sizeof(word),w);
+  }
+
+  void push(word w) {
+    s -= sizeof(word);
+    write_word(s,w);
+  }
+
+  word pop() {
+    word w = read_word(s);
+    s += sizeof(word);
+    return w;
+  }
+
+  inline word r_top() {
+    return read_word(r);
+  }
+
+  void r_push(word w) {
+    r -= sizeof(word);
+    write_word(r,w);
+  }
+
+  word r_pop() {
+    word w = read_word(r);
+    r += sizeof(word);
+    return w;
+  }
+
+  void set_top_truthness(bool b) {
+    set_top(b ? FORTH_TRUE : FORTH_FALSE);
+  }
+
 
   external_pointer ip = 0;
-  stack* s = &S;
-  stack* r = &R;
 
   while(1) {
     /* On interrupt we save the current ip pointer and proceed to the interrupt vector. */
     ATOMIC_BLOCK(ATOMIC_FORCEON) {
-      if(interrupt) {
-        push(r,ip);
-        ip = interrupt;
+      if(forth_interrupt) {
+        r_push(ip);
+        ip = forth_interrupt;
       }
     }
     word op = read_word(ip);
     ip += sizeof(word);
 
     /* If the value is an address, call to that address. */
-    if( (byte)(op >> 24) & 0xf0 ) {
-      push(r,ip);
+    if( spi_mode(op) & MODE_MASK ) {
+      r_push(ip);
       ip = op;
     } else {
       /* Otherwise the value is an opcode. */
@@ -305,133 +380,133 @@ int main() {
       switch(op) {
 
         case 0: // opcode("exit")
-          ip = pop(r);
+          ip = r_pop();
           break;
 
         case 1: // opcode(">r")
-          push(r, pop(s));
+          r_push(pop());
           break;
 
         case 2: // opcode("r@")
-          push(s, top(r));
+          push(r_top());
           break;
 
         case 3: // opcode("r>")
-          push(s, pop(r));
+          push(r_pop());
           break;
 
         case 4: // opcode("rdrop")
-          r->p += sizeof(word);
+          r += sizeof(word);
           break;
 
         case 5: // opcode("dup")
-          push(s, top(s));
+          push(top());
           break;
 
         case 6: // opcode("drop")
-          s->p += sizeof(word);
+          s += sizeof(word);
           break;
 
         case 7: // opcode("nip")
-          w = pop(s);
-          set_top(s,w);
+          w = pop();
+          set_top(w);
           break;
 
         case 8: // opcode("swap")
-          w = top(s);
-          set_top(s,top2(s));
-          set_top2(s,w);
+          w = top();
+          set_top(top2());
+          set_top2(w);
           break;
 
         case 9: // opcode("over")
-          w = top2(s);
-          push(s,w);
+          w = top2();
+          push(w);
           break;
 
         case 10: // opcode("u<")
-          w = pop(s);
-          set_top(s, top(s) < w ? FORTH_TRUE : FORTH_FALSE);
+          w = pop();
+          set_top_truthness(top() < w);
           break;
 
         case 11: // opcode("+")
-          w = pop(s);
-          set_top(s, top(s) + w);
+          w = pop();
+          set_top(top() + w);
           break;
 
         case 12: // opcode("and")
-          w = pop(s);
-          set_top(s, top(s) & w);
+          w = pop();
+          set_top(top() & w);
           break;
 
         case 13: // opcode("or")
-          w = pop(s);
-          set_top(s, top(s) | w);
+          w = pop();
+          set_top(top() | w);
           break;
 
         case 14: // opcode("xor") // optionally
-          w = pop(s);
-          set_top(s, top(s) ^ w);
+          w = pop();
+          set_top(top() ^ w);
           break;
 
         case 15: // opcode("1+")
-          set_top(s, top(s) + 1);
+          set_top(top() + 1);
           break;
 
         case 16: // opcode("0=")
-          set_top(s, top(s) == 0 ? FORTH_TRUE : FORTH_FALSE);
+          set_top_truthness(top() == 0);
           break;
 
         case 17: // opcode("negate") // optionally
-          set_top(s, -top(s));
+          set_top(-top());
           break;
 
         case 18: // opcode("invert") optionally
-          set_top(s, ~top(s));
+          set_top(~top());
           break;
 
         case 19: // opcode("2/")
-          set_top(s, top(s) >> 1);
+          set_top(top() >> 1);
           break;
 
         case 20: // opcode("c@")
-          set_top(s, read_byte(top(s)));
+          set_top(read_byte(top()));
           break;
 
         case 21: // opcode("@")
-          set_top(s, read_word(top(s)));
+          set_top(read_word(top()));
           break;
 
         case 22: // opcode("c!")
-          w = pop(s);
-          write_byte(w,pop(s) & 0xff);
+          w = pop();
+          write_byte(w,pop() & 0xff);
           break;
 
         case 23: // opcode("!")
-          w = pop(s);
-          write_word(w,pop(s));
+          w = pop();
+          write_word(w,pop());
           break;
 
         case 24: // opcode("lit")
-          push(s, read_word(ip));
+          push(read_word(ip));
           break;
 
         case 25: // opcode("0branch")
-          ip = pop(s) == 0 ? read_word(ip) : ip+sizeof(word);
+          ip = pop() == 0 ? read_word(ip) : ip+sizeof(word);
           break;
 
         case 26: // opcode("branch")
           ip = read_word(ip);
           break;
 
-        /* Normally called from within `interrupt_usart`. */
+        /* Normally called from within `forth_interrupt_usart`. */
         case 27: // opcode("get-key")
-          push(s,received);
+          push((word)received);
           break;
 
         /* Send one character out through USART; returns TRUE iff the character was sent. */
         case 28: // opcode("emit")
-          b = top(s) & 0xff;
-          set_top(s, usart_send(b) ? FORTH_TRUE : FORTH_FALSE);
+          b = top() & 0xff;
+          set_top_truthness(usart_send(b));
           break;
       }
     }
