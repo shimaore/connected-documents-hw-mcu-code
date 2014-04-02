@@ -5,7 +5,7 @@ DUDE_TARGET=attiny2313
 DUDE_PROG=stk500v2
 AVRDUDE=avrdude
 PORT=/dev/ttyUSB0
-override CFLAGS=-Wall -g -Os -mmcu=${MCU_TARGET} -std=gnu99
+override CFLAGS=-Wall -g -O4 -Os -fshort-enums -mmcu=${MCU_TARGET} -std=gnu99
 override LDFLAGS=-Os
 
 %.o: %.c
@@ -26,6 +26,8 @@ override LDFLAGS=-Os
 program-%: %.hex
 	# Write code out
 	${AVRDUDE} -c ${DUDE_PROG} -p ${DUDE_TARGET} -P ${PORT} -U flash:w:$<
+
+current: main.elf.lst
 
 clean:
 	rm -f *.o *.elf *.elf.map *.lst *.hex
