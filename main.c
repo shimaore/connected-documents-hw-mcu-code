@@ -9,25 +9,6 @@
 * - interface with Bluetooth module, e.g. HM-5 or HM-10 (in Forth code)
 */
 
-#include <stdlib.h>
-#include <stdint.h>
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include <util/atomic.h>
-
-typedef uint8_t byte;
-typedef byte* pointer;
-
-typedef uint8_t bool;
-enum { false = 0, true = 1 };
-
-/* With a 512Ko flash we need at least 3 octets per address */
-typedef uint32_t cell;
-typedef cell  external_pointer;
-
-/* We used 16bits integers for PWM. */
-typedef uint32_t word;
-
 /* Flash designations in different platform versions
 * v0.0.1 (test): Spansion S25FL204K0TMFI011
 */
@@ -44,7 +25,54 @@ typedef uint32_t word;
 /* This is for a 16MHz clock. */
 #define F_CPU 16000000
 
-void usart_9600() {
+#include <stdlib.h>
+#include <stdint.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/atomic.h>
+
+typedef uint8_t byte;
+typedef byte* pointer;
+
+typedef uint8_t bool;
+enum { false = 0, true = 1 };
+
+/* We use 16bits integers for PWM. */
+typedef uint16_t word;
+
+/* With a 512Ko flash we need at least 3 octets per address */
+typedef __uint24 cell;
+typedef cell  external_pointer;
+
+/* Part of the address is used as target select. */
+
+/* Note: there is only Flash or RAM, and we only test
+ * for Flash; we use the highest bit as Flash indicator
+ * so that the compiler can optimize the test as a
+ * "is number negative" test.
+ */
+
+enum {
+  ADDR_FLASH = 0x800000,
+  ADDR_RAM   = 0x400000,
+
+  ADDR_MASK  = 0xc00000
+};
+
+/* Forth Interrupt Block layout */
+
+enum {
+  forth_interrupt_reset = 0 | ADDR_FLASH,
+  forth_interrupt_usart = sizeof(cell) | ADDR_FLASH,
+};
+
+/* Run Forth reset when AVR resets. */
+
+volatile cell forth_interrupt = forth_interrupt_reset;
+
+/************************ USART *******************************/
+
+inline void usart_9600() {
 #undef BAUD
 #define BAUD 9600
 #include <util/setbaud.h>
@@ -57,7 +85,7 @@ UCSRA &= ~(1 << U2X);
 #endif
 }
 
-void usart_38400() {
+inline void usart_38400() {
 #undef BAUD  // avoid compiler warning
 #define BAUD 38400
 #include <util/setbaud.h>
@@ -70,33 +98,6 @@ UCSRA &= ~(1 << U2X);
 #endif
 }
 
-/* Part of the address is used as target select. */
-
-enum {
-  ADDR_FLASH = 0x10000000,
-  ADDR_RAM   = 0x20000000
-};
-
-enum {
-  MODE_FLASH = 0x10,
-  MODE_RAM   = 0x20,
-
-  MODE_MASK  = 0x0f
-};
-
-/* Forth Interrupt Block layout */
-
-enum {
-  forth_interrupt_reset = 0 | ADDR_FLASH,
-  forth_interrupt_usart = 4 | ADDR_FLASH,
-};
-
-/* Run Forth reset when AVR resets. */
-
-cell forth_interrupt = forth_interrupt_reset;
-
-/************************ USART *******************************/
-
 /* Bluetooth interface uses the USART in RS-232 mode. */
 
 /* Defaults:
@@ -105,14 +106,14 @@ cell forth_interrupt = forth_interrupt_reset;
  * - HM-10 uses 
  */
 
-void usart_init() {
-  UCSRB = (1<<RXCIE)|(1<<RXEN)|(1<<TXEN);
+inline void usart_init() {
+  UCSRB = _BV(RXCIE)|_BV(RXEN)|_BV(TXEN);
   UCSRC = (3<<UCSZ0); // 8 bits
   usart_9600();
 }
 
 /* USART "buffer" (single char for now) */
-uint8_t received = 0;
+volatile uint8_t received = 0;
 
 ISR( USART_RX_vect, ISR_BLOCK ) {
   /* Get the (inbound) character from the USART. */
@@ -122,7 +123,7 @@ ISR( USART_RX_vect, ISR_BLOCK ) {
   forth_interrupt = forth_interrupt_usart;
 }
 
-bool usart_send( byte t ) {
+inline bool usart_send( byte t ) {
   /* Sent the character out through the USART. */
   if( !( UCSRA & (1 << UDRE))) {
     return false;
@@ -182,9 +183,11 @@ enum {
   RAM_DISABLE_HOLD    = 0x01
 };
 
-void spi_init() {
-  cli();
+inline void spi_init() {
+  SCK_DDR |= _BV(SCK_BIT);
+  DO_DDR |= _BV(DO_BIT);
 
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
   // Set the SRAM to Sequential Mode (bit 7/6 = 01); also enable HOLD (bit 0 = 0).
   clear_bit_CS_RAM(); // Chip Select RAM
   byte_SPI(RAM_WRSR); // Write Status Register
@@ -194,97 +197,74 @@ void spi_init() {
   /* The Flash is not configured, the forth code must take care of it using
    * the `spi_flash` instruction.
    */
-
-  // Re-enable interrupts
-  sei();
-}
-
-void spi_start( byte mode ) {
-  cli();
-  switch( mode & MODE_MASK ) {
-    case MODE_FLASH:
-      clear_bit_CS_FLASH();
-      break;
-    case MODE_RAM:
-      clear_bit_CS_RAM();
-      break;
   }
 }
 
-void spi_address( byte mode, cell target ) {
-  switch( mode & MODE_MASK ) {
-    case MODE_FLASH:
+inline void spi_start( cell target ) {
+  if( target & ADDR_FLASH ) {
+    clear_bit_CS_FLASH();
+  } else {
+    clear_bit_CS_RAM();
+  }
+}
+
+void spi_address( cell target ) {
+  if( target & ADDR_FLASH ) {
       byte_SPI((target>>16)&0xff);
-      byte_SPI((target>>8)&0xff);
-      byte_SPI((target)&0xff);
-      break;
-    case MODE_RAM:
-      byte_SPI((target>>8)&0xff);
-      byte_SPI((target)&0xff);
-      break;
   }
+  byte_SPI((target>>8)&0xff);
+  byte_SPI((target)&0xff);
 }
 
-void spi_stop() {
+inline void spi_stop() {
   set_bit_CS_RAM();
   set_bit_CS_FLASH();
-  sei();
 }
 
-#define spi_mode(addr) ((byte)(addr >> 24))
+typedef enum {
+  SPI_COMMAND_READ  = 0x03,
+  SPI_COMMAND_WRITE = 0x04
+} spi_command;
 
-void spi_read(pointer target, external_pointer start, byte length ) {
-  spi_start(spi_mode(start));
+void spi_cmd(pointer target, external_pointer start, byte length, spi_command cmd ) {
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+  spi_start(start);
   // send command & send address
-  byte_SPI(0x03);
-  spi_address(spi_mode(start),start);
+  byte_SPI(cmd);
+  spi_address(start);
   while(length--) {
-    *(target++) = byte_SPI(0);
+    *(target) = byte_SPI(*target);
+    target++;
   }
   spi_stop();
+  }
 }
 
-void spi_write(pointer source, external_pointer start, byte length ) {
-  spi_start(spi_mode(start));
-  // send command & send address
-  byte_SPI(0x04);
-  spi_address(spi_mode(start),start);
-  while(length--) {
-    byte_SPI(*(source++));
-  }
-  spi_stop();
-}
+inline void spi_read(pointer t, external_pointer p, byte l) { spi_cmd(t,p,l,SPI_COMMAND_READ); }
+inline void spi_write(pointer t, external_pointer p, byte l) { spi_cmd(t,p,l,SPI_COMMAND_WRITE); }
 
 /* Higher-level SPI access methods */
-cell read_cell( external_pointer p ) {
-  cell c;
-  spi_read((pointer)&c,p,sizeof(c));
+cell spi_cell( external_pointer p, cell c, byte cmd ) {
+  spi_cmd((pointer)&c,p,sizeof(c),cmd);
   return c;
 }
 
-word read_word( external_pointer p ) {
-  word w;
-  spi_read((pointer)&w,p,sizeof(w));
+word spi_word( external_pointer p, word w, byte cmd ) {
+  spi_cmd((pointer)&w,p,sizeof(w),cmd);
   return w;
 }
 
-byte read_byte( external_pointer p ) {
-  byte b;
-  spi_read(&b,p,sizeof(b));
+byte spi_byte( external_pointer p, byte b, byte cmd ) {
+  spi_cmd((pointer)&b,p,sizeof(b),cmd);
   return b;
 }
 
-void write_cell( external_pointer p, cell c ) {
-  spi_write((pointer)&c,p,sizeof(c));
-}
-
-void write_word( external_pointer p, word w) {
-  spi_write((pointer)&w,p,sizeof(w));
-}
-
-void write_byte( external_pointer p, byte b ) {
-  spi_write(&b,p,sizeof(b));
-}
+inline byte read_byte(external_pointer p) { return spi_byte(p,0,SPI_COMMAND_READ); }
+inline void write_byte(external_pointer p, byte b) { spi_byte(p,b,SPI_COMMAND_WRITE); }
+inline word read_word(external_pointer p) { return spi_word(p,0,SPI_COMMAND_READ); }
+inline void write_word(external_pointer p, word w) { spi_word(p,w,SPI_COMMAND_WRITE); }
+inline cell read_cell(external_pointer p) { return spi_cell(p,0,SPI_COMMAND_READ); }
+inline void write_cell(external_pointer p, cell c) { spi_cell(p,c,SPI_COMMAND_WRITE); }
 
 /********************* PWM control ********************/
 
@@ -301,44 +281,19 @@ void write_byte( external_pointer p, byte b ) {
 
 /* Address in main-memory/flash where the loop description starts. */
 external_pointer loop_start = 0;
-word loop_length = 0; // in number of uint16_t words
-word loop_pos = 0; // in number of uint16_t words
+volatile word loop_length = 0; // in number of uint16_t words
+volatile word loop_pos = 0; // in number of uint16_t words
 
-/* Internal buffer for PWM buffer */
-enum { pwm_buffer_size = 16 };
-uint8_t pwm_buffer_len = 0;
-uint8_t pwm_buffer_pos = 0;
-word pwm_duty_cycles[pwm_buffer_size];
-
-void pwm_init() {
-  // TODO: initialize COM1A1, COM1A0, COM1B1, COM1B0, WGM, TOV1...
+inline void pwm_init() {
+  TCCR1A = _BV(COM1B1) | _BV(WGM10) | _BV(WGM11);
+  TCCR1B = _BV(WGM12) | _BV(WGM13);
+  TIFR |= _BV(TOV1);
+  TIMSK |= _BV(TOIE1);
+  // Set OC1A / PB3 as output.
+  OC1B_DDR |= _BV(OC1B_BIT);
 }
 
-/* Copy a full block worth of data, then increments the position. */
-void read_pwm_duty_cycles() {
-  /* Simplify in case loop_length is zero */
-  if(loop_length == 0) {
-    loop_pos = 0;
-    pwm_buffer_len = 0;
-    pwm_buffer_pos = 0;
-    return;
-  }
-  /* With a positive loop_length, check whether we are reading the last block,
-   * which might be incomplete. */
-  if( loop_pos + pwm_buffer_size >= loop_length ) {
-    pwm_buffer_len = loop_length - loop_pos;
-  } else {
-    pwm_buffer_len = pwm_buffer_size;
-  }
-  spi_read((pointer)pwm_duty_cycles,loop_start+loop_pos*sizeof(word)+4,pwm_buffer_len*sizeof(word));
-  loop_pos += pwm_buffer_len;
-  if(loop_pos >= loop_length) {
-    loop_pos = 0;
-  }
-  pwm_buffer_pos = 0;
-}
-
-void pwm_change_loop( external_pointer start ) {
+inline void pwm_change_loop( external_pointer start ) {
   loop_start = start;
 
   /* The loop description starts with the base frequency of the loop. */
@@ -350,18 +305,14 @@ void pwm_change_loop( external_pointer start ) {
   /* Then comes the length in number of 16bits elements, itself a 16bits element. */
   loop_length = read_word(loop_start+2);
   loop_pos = 0;
-
-  read_pwm_duty_cycles();
 }
 
 ISR( TIMER1_OVF_vect, ISR_BLOCK ) {
-  if(pwm_buffer_len > 0) {
-    OCR1B = pwm_duty_cycles[pwm_buffer_pos];
-    pwm_buffer_pos++;
-    if(pwm_buffer_pos >= pwm_buffer_len) {
-      read_pwm_duty_cycles();
-    }
+  if(loop_pos >= loop_length) {
+    loop_pos = 0;
   }
+  OCR1B = read_word(loop_pos);
+  loop_pos++;
 }
 
 /* Examples of scenarios to test:
@@ -385,16 +336,16 @@ enum { rp0 = 0x1000, sp0 = 0x2000, pad = 0x2000 };
 
 typedef external_pointer stack;
 
-const cell FORTH_FALSE = 0;
-const cell FORTH_TRUE = ~0;
+const cell FORTH_FALSE = (cell)0;
+const cell FORTH_TRUE = (cell)~0;
 
 int main() {
   usart_init();
   spi_init();
   pwm_init();
 
-  stack s = (stack)(sp0 | ADDR_RAM);
-  stack r = (stack)(rp0 | ADDR_RAM);
+  register stack s = (stack)(sp0 | ADDR_RAM);
+  register stack r = (stack)(rp0 | ADDR_RAM);
 
   inline cell top() {
     return read_cell(s);
@@ -442,7 +393,6 @@ int main() {
     set_top(b ? FORTH_TRUE : FORTH_FALSE);
   }
 
-
   external_pointer ip = 0;
 
   while(1) {
@@ -457,7 +407,7 @@ int main() {
     ip += sizeof(cell);
 
     /* If the value is an address, call to that address. */
-    if( spi_mode(op) & MODE_MASK ) {
+    if( op & ADDR_MASK ) {
       r_push(ip);
       ip = op;
     } else {
@@ -465,7 +415,8 @@ int main() {
 
       cell c;
       byte b;
-      uint8_t buffer[0x20];
+      enum { buffer_length = 0x20 };
+      uint8_t buffer[buffer_length];
       switch(op) {
 
         /**** IP manipulation ****/
@@ -479,6 +430,7 @@ int main() {
 
         case 2: // opcode("lit")
           push(read_cell(ip));
+          ip += sizeof(cell);
           break;
 
         case 3: // opcode("0branch")
@@ -600,26 +552,37 @@ int main() {
          * configuration.
          */
         /* spi_flash: addr length(<32) -- */
-        case 26: // opcode("spi_flash")
+        case 26: // opcode("spi-flash")
           {
-            b = pop() & 0x1f;
+            b = pop() & (buffer_length-1);
             c = pop();
             pointer source = buffer;
+            /* Read the command */
             spi_read(buffer,c,b);
-            cli();
-            clear_bit_CS_FLASH();
-            while(c--) {
-              *source = byte_SPI(*source);
-              source++;
+            /* Execute the command */
+            ATOMIC_BLOCK(ATOMIC_FORCEON) {
+              clear_bit_CS_FLASH();
+              while(c--) {
+                *source = byte_SPI(*source);
+                source++;
+              }
+              set_bit_CS_FLASH();
             }
-            set_bit_CS_FLASH();
-            sei();
+            /* Write the output back */
             spi_write(buffer,c,b);
           }
           break;
 
         case 27: // opcode("pwm")
           pwm_change_loop(pop());
+          break;
+
+        case 28: // opcode("usart-9600")
+          usart_9600();
+          break;
+
+        case 29: // opcode("usart-38400")
+          usart_38400();
           break;
 
       }
