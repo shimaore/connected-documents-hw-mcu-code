@@ -36,7 +36,6 @@
 
 #define opcode(x) printf("  opcode %s\n",x);
 
-enum { sizeof_cell = 3 };
 
 #else
 
@@ -48,8 +47,6 @@ enum { sizeof_cell = 3 };
 #include <avr/sleep.h>
 
 #define opcode(x)
-
-enum { sizeof_cell = sizeof(cell) };
 
 #endif // __EMULATE
 
@@ -69,6 +66,16 @@ typedef uint32_t __uint24;
 /* With a 512Ko flash we need at least 3 octets per address */
 typedef __uint24 cell;
 typedef cell  external_pointer;
+
+#ifdef __EMULATE
+
+enum { sizeof_cell = 3 };
+
+#else
+
+enum { sizeof_cell = sizeof(cell) };
+
+#endif
 
 /* Part of the address is used as target select. */
 
