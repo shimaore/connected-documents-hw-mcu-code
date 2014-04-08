@@ -628,106 +628,110 @@ int main() {
           break;
 
         /***** Return stack *****/
-        case 4: opcode(">R")
+        case 4: opcode("R>")
+          push(r_pop());
+          break;
+
+        case 5: opcode(">R")
           r_push(pop());
           break;
 
-        case 5: opcode("R@") // optionally: r> dup >r
+        case 6: opcode("R@") // optionally: r> dup >r
           push(r_top());
           break;
 
-        case 6: opcode("RDROP") // optionally: r> drop
+        case 7: opcode("RDROP") // optionally: r> drop
           r += sizeof_cell;
           break;
 
         /***** Data Stack *****/
-        case 7: opcode("DUP")
+        case 8: opcode("DUP")
           push(top());
           break;
 
-        case 8: opcode("DROP")
+        case 9: opcode("DROP")
           s += sizeof_cell;
           break;
 
-        case 9: opcode("SWAP")
+        case 10: opcode("SWAP")
           c = top();
           set_top(top2());
           set_top2(c);
           break;
 
-        case 10: opcode("OVER")
+        case 11: opcode("OVER")
           c = top2();
           push(c);
           break;
 
         /****** ALU ********/
-        case 11: opcode("U<")
+        case 12: opcode("U<")
           c = pop();
           set_top_truthness(top() < c);
           break;
 
-        case 12: opcode("0=")
+        case 13: opcode("0=")
           set_top_truthness(top() == 0);
           break;
 
-        case 13: opcode("+")
+        case 14: opcode("+")
           c = pop();
           set_top(top() + c);
           break;
 
-        case 14: opcode("2/")
+        case 15: opcode("2/")
           set_top(top() >> 1);
           break;
 
-        case 15: opcode("AND")
+        case 16: opcode("AND")
           c = pop();
           set_top(top() & c);
           break;
 
-        case 16: opcode("OR")
+        case 17: opcode("OR")
           c = pop();
           set_top(top() | c);
           break;
 
-        case 17: opcode("XOR")
+        case 18: opcode("XOR")
           c = pop();
           set_top(top() ^ c);
           break;
 
         /***** Memory *******/
-        case 18: opcode("C@")
+        case 19: opcode("C@")
           set_top(read_byte(top()));
           break;
 
-        case 19: opcode("C!")
+        case 20: opcode("C!")
           c = pop();
           write_byte(c,pop() & 0xff);
           break;
 
-        case 20: opcode("W!")
+        case 21: opcode("W!")
           c = pop();
           write_word(c,pop() & 0xffff);
 
-        case 21: opcode("W@")
+        case 22: opcode("W@")
           set_top(read_word(top()));
           break;
 
-        case 22: opcode("@")
+        case 23: opcode("@")
           set_top(read_cell(top()));
           break;
 
-        case 23: opcode("!")
+        case 24: opcode("!")
           c = pop();
           write_cell(c,pop());
           break;
 
         /* Normally called from within `forth_interrupt_usart`. */
-        case 24: opcode("usart_received")
+        case 25: opcode("usart_received")
           push((cell)received);
           break;
 
         /* Send one character out through USART; returns TRUE iff the character was sent. */
-        case 25: opcode("usart_send")
+        case 26: opcode("usart_send")
           b = top() & 0xff;
           set_top_truthness(usart_send(b));
           break;
@@ -742,7 +746,7 @@ int main() {
          * configuration.
          */
         /* spi_flash: addr length(<32) -- */
-        case 26: opcode("spi-flash")
+        case 27: opcode("spi-flash")
 #ifdef __EMULATE
           printf("Invalid opcode spi-flash in emulation mode.\n");
           exit(1);
@@ -769,7 +773,7 @@ int main() {
           break;
 #endif
 
-        case 27: opcode("pwm")
+        case 28: opcode("pwm")
 #ifdef __EMULATE
           printf("Invalid opcode pwm in emulation mode.\n");
           exit(1);
@@ -779,15 +783,15 @@ int main() {
           break;
 #endif
 
-        case 28: opcode("usart-9600")
+        case 29: opcode("usart-9600")
           usart_9600();
           break;
 
-        case 29: opcode("usart-38400")
+        case 30: opcode("usart-38400")
           usart_38400();
           break;
 
-        case 30: opcode("sleep")
+        case 31: opcode("sleep")
           set_sleep_mode(SLEEP_MODE_IDLE);
           sleep_mode();
           break;
