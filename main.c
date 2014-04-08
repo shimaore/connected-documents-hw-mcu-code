@@ -34,8 +34,12 @@
 #define ATOMIC_BLOCK(x)
 #define set_sleep_mode(x)
 
-#define opcode(x) printf("  opcode %s\n",x);
+#define DEBUG
+#define opcode(x) fprintf(stderr,"  opcode %s\n",x);
 
+// #undef DEBUG
+// #undef opcode
+// #define opcode(x)
 
 #else
 
@@ -149,7 +153,7 @@ UCSRA &= ~(1 << U2X);
 
 #ifdef __EMULATE
 inline void usart_init() {
-  printf("usart_init()\n");
+  fprintf(stderr,"usart_init()\n");
 }
 #else
 inline void usart_init() {
@@ -164,9 +168,26 @@ volatile uint8_t received = 0;
 
 #ifdef __EMULATE
 
+byte flash_memory[FLASH_SIZE];
+bool output_done = false;
+
 void sleep_mode() {
   /* Get the (inbound) character from stdin. */
-  received = getchar();
+  int got = getchar();
+  if(got == EOF) {
+#ifdef DEBUG
+    fprintf(stderr,"received EOF\n");
+#endif
+    if(!output_done) {
+      fwrite(flash_memory,FLASH_SIZE,1,stdout);
+    }
+    exit(0);
+    return;
+  }
+  received = got;
+#ifdef DEBUG
+  fprintf(stderr,"received = %02x (%c)\n",received,received);
+#endif
 
   /* Set Forth interrupt */
   forth_interrupt = forth_interrupt_usart;
@@ -188,6 +209,7 @@ ISR( USART_RX_vect, ISR_BLOCK ) {
 
 inline bool usart_send( byte t ) {
   putchar(t);
+  output_done = true;
 }
 
 #else
@@ -208,7 +230,6 @@ inline bool usart_send( byte t ) {
 #ifdef __EMULATE
 // No pins in emulation
 
-byte flash_memory[FLASH_SIZE];
 byte ram_memory[RAM_SIZE];
 
 byte flash_init[] = {
@@ -218,7 +239,7 @@ byte flash_init[] = {
 
 inline void spi_init() {
   cell i;
-  printf("spi_init()\n");
+  fprintf(stderr,"spi_init()\n");
   for( i = 0; i < FLASH_SIZE; i++ ) {
     flash_memory[i] = 0xff;
   }
@@ -235,7 +256,7 @@ inline byte read_byte(external_pointer p) {
   if(p & ADDR_FLASH) {
     p -= ADDR_FLASH;
     if(p > FLASH_SIZE) {
-      printf("Invalid read in Flash at %0x",p+ADDR_FLASH);
+      fprintf(stderr,"Invalid read in Flash at %0x\n",p+ADDR_FLASH);
       exit(1);
     }
     return flash_memory[p];
@@ -243,19 +264,19 @@ inline byte read_byte(external_pointer p) {
   if(p & ADDR_RAM) {
     p -= ADDR_RAM;
     if( p > RAM_SIZE ) {
-      printf("Invalid read in RAM at %0x",p+ADDR_RAM);
+      fprintf(stderr,"Invalid read in RAM at %0x\n",p+ADDR_RAM);
       exit(1);
     }
     return ram_memory[p];
   }
-  printf("Invalid read at %0x",p);
+  fprintf(stderr,"Invalid read at %0x\n",p);
 }
 
 inline void write_byte(external_pointer p, byte b) {
   if(p & ADDR_FLASH) {
     p -= ADDR_FLASH;
     if(p > FLASH_SIZE) {
-      printf("Invalid write in Flash at %0x",p+ADDR_FLASH);
+      fprintf(stderr,"Invalid write in Flash at %0x\n",p+ADDR_FLASH);
       exit(1);
     }
     flash_memory[p] = b;
@@ -264,18 +285,20 @@ inline void write_byte(external_pointer p, byte b) {
   if(p & ADDR_RAM) {
     p -= ADDR_RAM;
     if( p > RAM_SIZE ) {
-      printf("Invalid write in RAM at %0x",p+ADDR_RAM);
+      fprintf(stderr,"Invalid write in RAM at %0x\n",p+ADDR_RAM);
       exit(1);
     }
     ram_memory[p] = b;
     return;
   }
-  printf("Invalid write at %0x",p);
+  fprintf(stderr,"Invalid write at %0x\n",p);
   exit(1);
 }
+
 inline word read_word(external_pointer p) {
   return ((word)read_byte(p) << 8) | (word)read_byte(p+1);
 }
+
 inline void write_word(external_pointer p, word w) {
   write_byte(p, (w >> 8) & 0xff);
   write_byte(p+1, w & 0xff);
@@ -443,7 +466,7 @@ inline void write_cell(external_pointer p, cell c) { spi_cell(p,c,SPI_COMMAND_WR
 #ifdef __EMULATE
 
 inline void pwm_init() {
-  printf("pwm_init\n");
+  fprintf(stderr,"pwm_init\n");
 }
 
 #else
@@ -538,7 +561,9 @@ int main() {
 
   void push(cell c) {
 #ifdef __EMULATE
-    printf("  push %06x\n",c);
+#ifdef DEBUG
+    fprintf(stderr,"  push %06x\n",c);
+#endif
 #endif
     s -= sizeof_cell;
     write_cell(s,c);
@@ -556,7 +581,9 @@ int main() {
 
   void r_push(cell c) {
 #ifdef __EMULATE
-    printf("  rpush %06x\n",c);
+#ifdef DEBUG
+    fprintf(stderr,"  rpush %06x\n",c);
+#endif
 #endif
     r -= sizeof_cell;
     write_cell(r,c);
@@ -579,6 +606,11 @@ int main() {
     /* On interrupt we save the current ip pointer and proceed to the interrupt vector. */
     ATOMIC_BLOCK(ATOMIC_FORCEON) {
       if(forth_interrupt) {
+#ifdef __EMULATE
+#ifdef DEBUG
+        fprintf(stderr,"forth_interrupt: ip=%06x, interrupt=%06x\n",ip,forth_interrupt);
+#endif
+#endif
         r_push(ip);
         ip = forth_interrupt;
         forth_interrupt = 0;
@@ -586,19 +618,25 @@ int main() {
     }
     cell op = read_cell(ip);
 #ifdef __EMULATE
-    printf("Read op=%06x from ip=%06x [rp=%06x,sp=%06x]\n",op,ip,r,s);
+#ifdef DEBUG
+    fprintf(stderr,"Read op=%06x from ip=%06x [rp=%06x,sp=%06x]\n",op,ip,r,s);
+#endif
 #endif
     ip += sizeof_cell;
 
     /* If the value is an address, call to that address. */
     if( op & ADDR_MASK ) {
 #ifdef __EMULATE
-      printf("Push ip=%06x\n",ip);
+#ifdef DEBUG
+      fprintf(stderr,"Push ip=%06x\n",ip);
+#endif
 #endif
       r_push(ip);
       ip = op;
 #ifdef __EMULATE
-      printf("Going to ip=%06x\n",ip);
+#ifdef DEBUG
+      fprintf(stderr,"Going to ip=%06x\n",ip);
+#endif
 #endif
     } else {
       /* Otherwise the value is an opcode. */
@@ -748,7 +786,7 @@ int main() {
         /* spi_flash: addr length(<32) -- */
         case 27: opcode("spi-flash")
 #ifdef __EMULATE
-          printf("Invalid opcode spi-flash in emulation mode.\n");
+          fprintf(stderr,"Invalid opcode spi-flash in emulation mode.\n");
           exit(1);
           break;
 #else
@@ -775,7 +813,7 @@ int main() {
 
         case 28: opcode("pwm")
 #ifdef __EMULATE
-          printf("Invalid opcode pwm in emulation mode.\n");
+          fprintf(stderr,"Invalid opcode pwm in emulation mode.\n");
           exit(1);
           break;
 #else
@@ -798,7 +836,7 @@ int main() {
 
 #ifdef __EMULATE
         default:
-          printf("Invalid opcode in emulation mode.\n");
+          fprintf(stderr,"Invalid opcode in emulation mode.\n");
           exit(1);
           break;
 #endif
