@@ -25,6 +25,20 @@
 /* This is for a 8MHz clock. */
 #define F_CPU 8000000
 
+#ifdef __EMULATE
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#define ATOMIC_FORCEON
+#define ATOMIC_BLOCK(x)
+#define set_sleep_mode(x)
+
+#define opcode(x) printf("  opcode %s\n",x);
+
+enum { sizeof_cell = 3 };
+
+#else
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -32,6 +46,12 @@
 #include <avr/interrupt.h>
 #include <util/atomic.h>
 #include <avr/sleep.h>
+
+#define opcode(x)
+
+enum { sizeof_cell = sizeof(cell) };
+
+#endif // __EMULATE
 
 typedef uint8_t byte;
 typedef byte* pointer;
@@ -41,6 +61,10 @@ enum { false = 0, true = 1 };
 
 /* We use 16bits integers for PWM. */
 typedef uint16_t word;
+
+#ifdef __EMULATE
+typedef uint32_t __uint24;
+#endif
 
 /* With a 512Ko flash we need at least 3 octets per address */
 typedef __uint24 cell;
@@ -65,7 +89,7 @@ enum {
 
 enum {
   forth_interrupt_reset = 0 | ADDR_FLASH,
-  forth_interrupt_usart = sizeof(cell) | ADDR_FLASH,
+  forth_interrupt_usart = sizeof_cell | ADDR_FLASH,
 };
 
 /* Run Forth reset when AVR resets. */
@@ -73,6 +97,11 @@ enum {
 volatile cell forth_interrupt = forth_interrupt_reset;
 
 /************************ USART *******************************/
+
+#ifdef __EMULATE
+inline void usart_9600() {}
+inline void usart_38400() {}
+#else
 
 inline void usart_9600() {
 #undef BAUD
@@ -100,6 +129,8 @@ UCSRA &= ~(1 << U2X);
 #endif
 }
 
+#endif // __EMULATE
+
 /* Bluetooth interface uses the USART in RS-232 mode. */
 
 /* Defaults:
@@ -108,14 +139,33 @@ UCSRA &= ~(1 << U2X);
  * - HM-10 uses 
  */
 
+
+#ifdef __EMULATE
+inline void usart_init() {
+  printf("usart_init()\n");
+}
+#else
 inline void usart_init() {
   UCSRB = _BV(RXCIE)|_BV(RXEN)|_BV(TXEN);
   UCSRC = (3<<UCSZ0); // 8 bits
   usart_9600();
 }
+#endif
 
 /* USART "buffer" (single char for now) */
 volatile uint8_t received = 0;
+
+#ifdef __EMULATE
+
+void sleep_mode() {
+  /* Get the (inbound) character from stdin. */
+  received = getchar();
+
+  /* Set Forth interrupt */
+  forth_interrupt = forth_interrupt_usart;
+}
+
+#else
 
 ISR( USART_RX_vect, ISR_BLOCK ) {
   /* Get the (inbound) character from the USART. */
@@ -124,6 +174,16 @@ ISR( USART_RX_vect, ISR_BLOCK ) {
   /* Set Forth interrupt */
   forth_interrupt = forth_interrupt_usart;
 }
+
+#endif /* __EMULATE */
+
+#ifdef __EMULATE
+
+inline bool usart_send( byte t ) {
+  putchar(t);
+}
+
+#else
 
 inline bool usart_send( byte t ) {
   /* Sent the character out through the USART. */
@@ -134,7 +194,97 @@ inline bool usart_send( byte t ) {
   return true;
 }
 
+#endif /* __EMULATE */
+
 /*********************** Flash/RAM SPI interface ********************************/
+
+#ifdef __EMULATE
+// No pins in emulation
+
+byte flash_memory[FLASH_SIZE];
+byte ram_memory[RAM_SIZE];
+
+byte flash_init[] = {
+#include "forth.bin.h"
+  0xff
+};
+
+inline void spi_init() {
+  cell i;
+  printf("spi_init()\n");
+  for( i = 0; i < FLASH_SIZE; i++ ) {
+    flash_memory[i] = 0xff;
+  }
+  for( i = 0; i < sizeof(flash_init); i++ ) {
+    flash_memory[i] = flash_init[i];
+  }
+  for( i = 0; i < RAM_SIZE; i++ ) {
+    ram_memory[i] = 0xff;
+  }
+
+}
+
+inline byte read_byte(external_pointer p) {
+  if(p & ADDR_FLASH) {
+    p -= ADDR_FLASH;
+    if(p > FLASH_SIZE) {
+      printf("Invalid read in Flash at %0x",p+ADDR_FLASH);
+      exit(1);
+    }
+    return flash_memory[p];
+  }
+  if(p & ADDR_RAM) {
+    p -= ADDR_RAM;
+    if( p > RAM_SIZE ) {
+      printf("Invalid read in RAM at %0x",p+ADDR_RAM);
+      exit(1);
+    }
+    return ram_memory[p];
+  }
+  printf("Invalid read at %0x",p);
+}
+
+inline void write_byte(external_pointer p, byte b) {
+  if(p & ADDR_FLASH) {
+    p -= ADDR_FLASH;
+    if(p > FLASH_SIZE) {
+      printf("Invalid write in Flash at %0x",p+ADDR_FLASH);
+      exit(1);
+    }
+    flash_memory[p] = b;
+    return;
+  }
+  if(p & ADDR_RAM) {
+    p -= ADDR_RAM;
+    if( p > RAM_SIZE ) {
+      printf("Invalid write in RAM at %0x",p+ADDR_RAM);
+      exit(1);
+    }
+    ram_memory[p] = b;
+    return;
+  }
+  printf("Invalid write at %0x",p);
+  exit(1);
+}
+inline word read_word(external_pointer p) {
+  return ((word)read_byte(p) << 8) | (word)read_byte(p+1);
+}
+inline void write_word(external_pointer p, word w) {
+  write_byte(p, (w >> 8) & 0xff);
+  write_byte(p+1, w & 0xff);
+}
+
+inline cell read_cell(external_pointer p) {
+  return ((cell)read_byte(p) << 16) | ((cell)read_byte(p+1) << 8) | ((cell)read_byte(p+2));
+}
+
+inline void write_cell(external_pointer p, cell c) {
+  write_byte(p+0, (c >> 16) & 0xff);
+  write_byte(p+1, (c >> 8) & 0xff);
+  write_byte(p+2, c & 0xff);
+}
+
+#else
 
 #define CS_RAM_PORT PORTD
 #define CS_RAM_PIN  PORTD2
@@ -268,6 +418,8 @@ inline void write_word(external_pointer p, word w) { spi_word(p,w,SPI_COMMAND_WR
 inline cell read_cell(external_pointer p) { return spi_cell(p,0,SPI_COMMAND_READ); }
 inline void write_cell(external_pointer p, cell c) { spi_cell(p,c,SPI_COMMAND_WRITE); }
 
+#endif
+
 /********************* PWM control ********************/
 
 /* Patterns may be read from Flash or from RAM over SPI. Patterns must provide a value for base frequency (OCR1A) and duty cycle (OCR1B). */
@@ -280,6 +432,14 @@ inline void write_cell(external_pointer p, cell c) { spi_cell(p,c,SPI_COMMAND_WR
  *
  * See also App Note http://www.atmel.com/Images/doc2542.pdf for filtering (R in series, C between output of R and ground, R=10k, C=100nF for crossover frequency of 1kHz (low-pass filter)).
  */
+
+#ifdef __EMULATE
+
+inline void pwm_init() {
+  printf("pwm_init\n");
+}
+
+#else
 
 /* Address in main-memory/flash where the loop description starts. */
 external_pointer loop_start = 0;
@@ -326,6 +486,7 @@ ISR( TIMER1_OVF_vect, ISR_BLOCK ) {
  * - base frequency with length > pwm_buffer_size (>2 blocks)
  */
 
+#endif /* __EMULATE */
 
 /****************** Forth operations *******************/
 
@@ -361,21 +522,24 @@ int main() {
   }
 
   cell top2() {
-    return read_cell(s+sizeof(cell));
+    return read_cell(s+sizeof_cell);
   }
 
   void set_top2(cell c) {
-    write_cell(s+sizeof(cell),c);
+    write_cell(s+sizeof_cell,c);
   }
 
   void push(cell c) {
-    s -= sizeof(cell);
+#ifdef __EMULATE
+    printf("  push %06x\n",c);
+#endif
+    s -= sizeof_cell;
     write_cell(s,c);
   }
 
   cell pop() {
     cell c = read_cell(s);
-    s += sizeof(cell);
+    s += sizeof_cell;
     return c;
   }
 
@@ -384,13 +548,16 @@ int main() {
   }
 
   void r_push(cell c) {
-    r -= sizeof(cell);
+#ifdef __EMULATE
+    printf("  rpush %06x\n",c);
+#endif
+    r -= sizeof_cell;
     write_cell(r,c);
   }
 
   cell r_pop() {
     cell c = read_cell(r);
-    r += sizeof(cell);
+    r += sizeof_cell;
     return c;
   }
 
@@ -411,12 +578,21 @@ int main() {
       }
     }
     cell op = read_cell(ip);
-    ip += sizeof(cell);
+#ifdef __EMULATE
+    printf("Read op=%06x from ip=%06x [rp=%06x,sp=%06x]\n",op,ip,r,s);
+#endif
+    ip += sizeof_cell;
 
     /* If the value is an address, call to that address. */
     if( op & ADDR_MASK ) {
+#ifdef __EMULATE
+      printf("Push ip=%06x\n",ip);
+#endif
       r_push(ip);
       ip = op;
+#ifdef __EMULATE
+      printf("Going to ip=%06x\n",ip);
+#endif
     } else {
       /* Otherwise the value is an opcode. */
 
@@ -427,124 +603,124 @@ int main() {
       switch(op) {
 
         /**** IP manipulation ****/
-        case 0: // opcode("exit")
+        case 0: opcode("EXIT")
           ip = r_pop();
           break;
 
-        case 1: // opcode("branch") // optionally:  0 0branch or: lit N >R exit
+        case 1: opcode("BRANCH") // optionally:  0 0branch or: lit N >R exit
           ip = read_cell(ip);
           break;
 
-        case 2: // opcode("lit")
+        case 2: opcode("LIT")
           push(read_cell(ip));
-          ip += sizeof(cell);
+          ip += sizeof_cell;
           break;
 
-        case 3: // opcode("0branch")
-          ip = pop() == 0 ? read_cell(ip) : ip+sizeof(cell);
+        case 3: opcode("0BRANCH")
+          ip = pop() == 0 ? read_cell(ip) : ip+sizeof_cell;
           break;
 
         /***** Return stack *****/
-        case 4: // opcode(">r")
+        case 4: opcode(">R")
           r_push(pop());
           break;
 
-        case 5: // opcode("r@") // optionally: r> dup >r
+        case 5: opcode("R@") // optionally: r> dup >r
           push(r_top());
           break;
 
-        case 6: // opcode("rdrop") // optionally: r> drop
-          r += sizeof(cell);
+        case 6: opcode("RDROP") // optionally: r> drop
+          r += sizeof_cell;
           break;
 
         /***** Data Stack *****/
-        case 7: // opcode("dup")
+        case 7: opcode("DUP")
           push(top());
           break;
 
-        case 8: // opcode("drop")
-          s += sizeof(cell);
+        case 8: opcode("DROP")
+          s += sizeof_cell;
           break;
 
-        case 9: // opcode("swap")
+        case 9: opcode("SWAP")
           c = top();
           set_top(top2());
           set_top2(c);
           break;
 
-        case 10: // opcode("over")
+        case 10: opcode("OVER")
           c = top2();
           push(c);
           break;
 
         /****** ALU ********/
-        case 11: // opcode("u<")
+        case 11: opcode("U<")
           c = pop();
           set_top_truthness(top() < c);
           break;
 
-        case 12: // opcode("0=")
+        case 12: opcode("0=")
           set_top_truthness(top() == 0);
           break;
 
-        case 13: // opcode("+")
+        case 13: opcode("+")
           c = pop();
           set_top(top() + c);
           break;
 
-        case 14: // opcode("2/")
+        case 14: opcode("2/")
           set_top(top() >> 1);
           break;
 
-        case 15: // opcode("and")
+        case 15: opcode("AND")
           c = pop();
           set_top(top() & c);
           break;
 
-        case 16: // opcode("or")
+        case 16: opcode("OR")
           c = pop();
           set_top(top() | c);
           break;
 
-        case 17: // opcode("xor")
+        case 17: opcode("XOR")
           c = pop();
           set_top(top() ^ c);
           break;
 
         /***** Memory *******/
-        case 18: // opcode("c@")
+        case 18: opcode("C@")
           set_top(read_byte(top()));
           break;
 
-        case 19: // opcode("c!")
+        case 19: opcode("C!")
           c = pop();
           write_byte(c,pop() & 0xff);
           break;
 
-        case 20: // opcode("w!")
+        case 20: opcode("W!")
           c = pop();
           write_word(c,pop() & 0xffff);
 
-        case 21: // opcode("w@")
+        case 21: opcode("W@")
           set_top(read_word(top()));
           break;
 
-        case 22: // opcode("@")
+        case 22: opcode("@")
           set_top(read_cell(top()));
           break;
 
-        case 23: // opcode("!")
+        case 23: opcode("!")
           c = pop();
           write_cell(c,pop());
           break;
 
         /* Normally called from within `forth_interrupt_usart`. */
-        case 24: // opcode("get-key")
+        case 24: opcode("usart_received")
           push((cell)received);
           break;
 
         /* Send one character out through USART; returns TRUE iff the character was sent. */
-        case 25: // opcode("emit")
+        case 25: opcode("usart_send")
           b = top() & 0xff;
           set_top_truthness(usart_send(b));
           break;
@@ -559,7 +735,12 @@ int main() {
          * configuration.
          */
         /* spi_flash: addr length(<32) -- */
-        case 26: // opcode("spi-flash")
+        case 26: opcode("spi-flash")
+#ifdef __EMULATE
+          printf("Invalid opcode spi-flash in emulation mode.\n");
+          exit(1);
+          break;
+#else
           {
             b = pop() & (buffer_length-1);
             c = pop();
@@ -579,16 +760,23 @@ int main() {
             spi_write(buffer,c,b);
           }
           break;
+#endif
 
-        case 27: // opcode("pwm")
+        case 27: opcode("pwm")
+#ifdef __EMULATE
+          printf("Invalid opcode pwm in emulation mode.\n");
+          exit(1);
+          break;
+#else
           pwm_change_loop(pop());
           break;
+#endif
 
-        case 28: // opcode("usart-9600")
+        case 28: opcode("usart-9600")
           usart_9600();
           break;
 
-        case 29: // opcode("usart-38400")
+        case 29: opcode("usart-38400")
           usart_38400();
           break;
 
@@ -597,9 +785,20 @@ int main() {
           sleep_mode();
           break;
 
+#ifdef __EMULATE
+        default:
+          printf("Invalid opcode in emulation mode.\n");
+          exit(1);
+          break;
+#endif
+
       }
     }
   }
 }
 
+#ifdef __EMULATE
+// Use standard exit()
+#else
 void exit(int __status) {}
+#endif
