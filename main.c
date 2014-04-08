@@ -401,6 +401,7 @@ int main() {
       if(forth_interrupt) {
         r_push(ip);
         ip = forth_interrupt;
+        forth_interrupt = 0;
       }
     }
     cell op = read_cell(ip);
