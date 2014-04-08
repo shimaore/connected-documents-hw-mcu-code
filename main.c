@@ -22,8 +22,9 @@
 /* Plarform version. */
 #define VERSION 0x00000100
 
-/* This is for a 16MHz clock. */
-#define F_CPU 16000000
+/* This is for a 8MHz clock. */
+#define F_CPU 8000000
+
 
 #include <stdlib.h>
 #include <stdint.h>
