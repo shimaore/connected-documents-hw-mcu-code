@@ -31,6 +31,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/atomic.h>
+#include <avr/sleep.h>
 
 typedef uint8_t byte;
 typedef byte* pointer;
@@ -333,7 +334,10 @@ ISR( TIMER1_OVF_vect, ISR_BLOCK ) {
  * For now the code does not attempt to do anything clever like caching.
  */
 
-enum { rp0 = 0x1000, sp0 = 0x2000, pad = 0x2000 };
+enum {
+  rp0 = 0x1000,
+  sp0 = 0x2000
+};
 
 typedef external_pointer stack;
 
@@ -394,6 +398,7 @@ int main() {
     set_top(b ? FORTH_TRUE : FORTH_FALSE);
   }
 
+  /* IP is set to 0, but since forth_interrupt is set at startup, it will prevail. */
   external_pointer ip = 0;
 
   while(1) {
@@ -585,6 +590,11 @@ int main() {
 
         case 29: // opcode("usart-38400")
           usart_38400();
+          break;
+
+        case 30: opcode("sleep")
+          set_sleep_mode(SLEEP_MODE_IDLE);
+          sleep_mode();
           break;
 
       }
