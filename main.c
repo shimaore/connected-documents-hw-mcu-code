@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <ctype.h>
 
 #define ATOMIC_FORCEON
 #define ATOMIC_BLOCK(x)
@@ -252,11 +253,39 @@ inline void spi_init() {
 
 }
 
+void spi_dump() {
+  enum { linelen = 32 };
+  cell i, j;
+  for( i = 0; i < RAM_SIZE; i += linelen ) {
+    fprintf(stderr,"  ram[%06x] ",i|ADDR_RAM);
+    for( j = 0; j < linelen && i+j < RAM_SIZE; j++ ) {
+      fprintf(stderr,"%02x ",ram_memory[i+j]);
+    }
+    fprintf(stderr,"  ");
+    for( j = 0; j < linelen && i+j < RAM_SIZE; j++ ) {
+      fprintf(stderr,"%c",isprint(ram_memory[i+j])?ram_memory[i+j]:'.');
+    }
+    fprintf(stderr,"\n");
+  }
+  for( i = 0; i < FLASH_SIZE; i += linelen ) {
+    fprintf(stderr,"  flash[%06x] ",i|ADDR_FLASH);
+    for( j = 0; j < linelen && i+j < FLASH_SIZE; j++ ) {
+      fprintf(stderr,"%02x ",flash_memory[i+j]);
+    }
+    fprintf(stderr,"  ");
+    for( j = 0; j < linelen && i+j < FLASH_SIZE; j++ ) {
+      fprintf(stderr,"%c",isprint(flash_memory[i+j])?flash_memory[i+j]:'.');
+    }
+    fprintf(stderr,"\n");
+  }
+}
+
 inline byte read_byte(external_pointer p) {
   if(p & ADDR_FLASH) {
     p -= ADDR_FLASH;
     if(p > FLASH_SIZE) {
       fprintf(stderr,"Invalid read in Flash at %0x\n",p+ADDR_FLASH);
+      spi_dump();
       exit(1);
     }
     return flash_memory[p];
@@ -265,11 +294,14 @@ inline byte read_byte(external_pointer p) {
     p -= ADDR_RAM;
     if( p > RAM_SIZE ) {
       fprintf(stderr,"Invalid read in RAM at %0x\n",p+ADDR_RAM);
+      spi_dump();
       exit(1);
     }
     return ram_memory[p];
   }
   fprintf(stderr,"Invalid read at %0x\n",p);
+  spi_dump();
+  exit(1);
 }
 
 inline void write_byte(external_pointer p, byte b) {
@@ -277,6 +309,7 @@ inline void write_byte(external_pointer p, byte b) {
     p -= ADDR_FLASH;
     if(p > FLASH_SIZE) {
       fprintf(stderr,"Invalid write in Flash at %0x\n",p+ADDR_FLASH);
+      spi_dump();
       exit(1);
     }
     flash_memory[p] = b;
@@ -286,12 +319,14 @@ inline void write_byte(external_pointer p, byte b) {
     p -= ADDR_RAM;
     if( p > RAM_SIZE ) {
       fprintf(stderr,"Invalid write in RAM at %0x\n",p+ADDR_RAM);
+      spi_dump();
       exit(1);
     }
     ram_memory[p] = b;
     return;
   }
   fprintf(stderr,"Invalid write at %0x\n",p);
+  spi_dump();
   exit(1);
 }
 
@@ -305,10 +340,12 @@ inline void write_word(external_pointer p, word w) {
 }
 
 inline cell read_cell(external_pointer p) {
+  fprintf(stderr,"    read_cell(%06x)\n",p);
   return ((cell)read_byte(p) << 16) | ((cell)read_byte(p+1) << 8) | ((cell)read_byte(p+2));
 }
 
 inline void write_cell(external_pointer p, cell c) {
+  fprintf(stderr,"    write_cell(%06x,%06x)\n",p,c);
   write_byte(p+0, (c >> 16) & 0xff);
   write_byte(p+1, (c >> 8) & 0xff);
   write_byte(p+2, c & 0xff);
@@ -628,16 +665,11 @@ int main() {
     if( op & ADDR_MASK ) {
 #ifdef __EMULATE
 #ifdef DEBUG
-      fprintf(stderr,"Push ip=%06x\n",ip);
+      fprintf(stderr,"Call to %06x, rpush ip=%06x\n",op,ip);
 #endif
 #endif
       r_push(ip);
       ip = op;
-#ifdef __EMULATE
-#ifdef DEBUG
-      fprintf(stderr,"Going to ip=%06x\n",ip);
-#endif
-#endif
     } else {
       /* Otherwise the value is an opcode. */
 
@@ -652,7 +684,7 @@ int main() {
           ip = r_pop();
           break;
 
-        case 1: opcode("BRANCH") // optionally:  0 0branch or: lit N >R exit
+        case 1: opcode("BRANCH")
           ip = read_cell(ip);
           break;
 
@@ -666,110 +698,106 @@ int main() {
           break;
 
         /***** Return stack *****/
-        case 4: opcode("R>")
-          push(r_pop());
-          break;
-
-        case 5: opcode(">R")
+        case 4: opcode(">R")
           r_push(pop());
           break;
 
-        case 6: opcode("R@") // optionally: r> dup >r
+        case 5: opcode("R@") // optionally: r> dup >r
           push(r_top());
           break;
 
-        case 7: opcode("RDROP") // optionally: r> drop
+        case 6: opcode("RDROP") // optionally: r> drop
           r += sizeof_cell;
           break;
 
         /***** Data Stack *****/
-        case 8: opcode("DUP")
+        case 7: opcode("DUP")
           push(top());
           break;
 
-        case 9: opcode("DROP")
+        case 8: opcode("DROP")
           s += sizeof_cell;
           break;
 
-        case 10: opcode("SWAP")
+        case 9: opcode("SWAP")
           c = top();
           set_top(top2());
           set_top2(c);
           break;
 
-        case 11: opcode("OVER")
+        case 10: opcode("OVER")
           c = top2();
           push(c);
           break;
 
         /****** ALU ********/
-        case 12: opcode("U<")
+        case 11: opcode("U<")
           c = pop();
           set_top_truthness(top() < c);
           break;
 
-        case 13: opcode("0=")
+        case 12: opcode("0=")
           set_top_truthness(top() == 0);
           break;
 
-        case 14: opcode("+")
+        case 13: opcode("+")
           c = pop();
           set_top(top() + c);
           break;
 
-        case 15: opcode("2/")
+        case 14: opcode("2/")
           set_top(top() >> 1);
           break;
 
-        case 16: opcode("AND")
+        case 15: opcode("AND")
           c = pop();
           set_top(top() & c);
           break;
 
-        case 17: opcode("OR")
+        case 16: opcode("OR")
           c = pop();
           set_top(top() | c);
           break;
 
-        case 18: opcode("XOR")
+        case 17: opcode("XOR")
           c = pop();
           set_top(top() ^ c);
           break;
 
         /***** Memory *******/
-        case 19: opcode("C@")
+        case 18: opcode("C@")
           set_top(read_byte(top()));
           break;
 
-        case 20: opcode("C!")
+        case 19: opcode("C!")
           c = pop();
           write_byte(c,pop() & 0xff);
           break;
 
-        case 21: opcode("W!")
+        case 20: opcode("W!")
           c = pop();
           write_word(c,pop() & 0xffff);
 
-        case 22: opcode("W@")
+        case 21: opcode("W@")
           set_top(read_word(top()));
           break;
 
-        case 23: opcode("@")
+        case 22: opcode("@")
           set_top(read_cell(top()));
           break;
 
-        case 24: opcode("!")
+        case 23: opcode("!")
           c = pop();
           write_cell(c,pop());
           break;
 
         /* Normally called from within `forth_interrupt_usart`. */
-        case 25: opcode("usart_received")
+        case 24: opcode("usart_received")
           push((cell)received);
           break;
 
         /* Send one character out through USART; returns TRUE iff the character was sent. */
-        case 26: opcode("usart_send")
+        case 25: opcode("usart_send")
           b = top() & 0xff;
           set_top_truthness(usart_send(b));
           break;
@@ -784,9 +812,10 @@ int main() {
          * configuration.
          */
         /* spi_flash: addr length(<32) -- */
-        case 27: opcode("spi-flash")
+        case 26: opcode("spi-flash")
 #ifdef __EMULATE
           fprintf(stderr,"Invalid opcode spi-flash in emulation mode.\n");
+          spi_dump();
           exit(1);
           break;
 #else
@@ -811,9 +840,10 @@ int main() {
           break;
 #endif
 
-        case 28: opcode("pwm")
+        case 27: opcode("pwm")
 #ifdef __EMULATE
           fprintf(stderr,"Invalid opcode pwm in emulation mode.\n");
+          spi_dump();
           exit(1);
           break;
 #else
@@ -821,15 +851,15 @@ int main() {
           break;
 #endif
 
-        case 29: opcode("usart-9600")
+        case 28: opcode("usart-9600")
           usart_9600();
           break;
 
-        case 30: opcode("usart-38400")
+        case 29: opcode("usart-38400")
           usart_38400();
           break;
 
-        case 31: opcode("sleep")
+        case 30: opcode("sleep")
           set_sleep_mode(SLEEP_MODE_IDLE);
           sleep_mode();
           break;
@@ -837,6 +867,7 @@ int main() {
 #ifdef __EMULATE
         default:
           fprintf(stderr,"Invalid opcode in emulation mode.\n");
+          spi_dump();
           exit(1);
           break;
 #endif
