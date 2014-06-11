@@ -354,24 +354,49 @@ inline void write_cell(external_pointer p, cell c) {
 #else
 
 #define CS_RAM_PORT PORTD
-#define CS_RAM_PIN  PORTD2
+#define CS_RAM_BIT  PORTD2
+
 #define CS_FLASH_PORT PORTD
-#define CS_FLASH_PIN  PORTD3
+#define CS_FLASH_PIN  PIND
+#define CS_FLASH_BIT  PORTD3
 
-inline void clear_bit_CS_RAM() {
-  CS_RAM_PORT &= ~_BV(CS_RAM_PIN);
+#define USI_PIN  PINB
+#define USI_MASK (_BV(PORTB5) | _BV(PORTB6) | _BV(PORTB7))
+
+void wait_for_bus() {
+  // The Flash programmer (connected to the USB port) might be active (low).
+  // While it is active we cannot process commands on the Flash or the RAM chips.
+  while(
+        (CS_FLASH_PIN & _BV(CS_FLASH_BIT)) == 0 // Flash is being accessed
+    ||  (USI_PIN & USI_MASK) != USI_MASK        // USI bus is being accessed
+    ) { }
+  SCK_DDR |= _BV(SCK_BIT);
+  DO_DDR |= _BV(DO_BIT);
 }
 
-inline void clear_bit_CS_FLASH() {
-  CS_FLASH_PORT &= ~_BV(CS_FLASH_PIN);
+void release_bus() {
+  SCK_DDR &= ~ _BV(SCK_BIT);
+  DO_DDR &= ~ _BV(DO_BIT);
 }
 
-inline void set_bit_CS_RAM() {
-  CS_RAM_PORT |= _BV(CS_RAM_PIN);
+inline void start_CS_RAM() {
+  wait_for_bus();
+  CS_RAM_PORT &= ~_BV(CS_RAM_BIT);
 }
 
-inline void set_bit_CS_FLASH() {
-  CS_FLASH_PORT |= _BV(CS_FLASH_PIN);
+inline void start_CS_FLASH() {
+  wait_for_bus();
+  CS_FLASH_PORT &= ~_BV(CS_FLASH_BIT);
+}
+
+inline void stop_CS_RAM() {
+  CS_RAM_PORT |= _BV(CS_RAM_BIT);
+  release_bus();
+}
+
+inline void stop_CS_FLASH() {
+  CS_FLASH_PORT |= _BV(CS_FLASH_BIT);
+  release_bus();
 }
 
 uint8_t byte_SPI( uint8_t value ) {
@@ -403,15 +428,12 @@ enum {
 };
 
 inline void spi_init() {
-  SCK_DDR |= _BV(SCK_BIT);
-  DO_DDR |= _BV(DO_BIT);
-
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
   // Set the SRAM to Sequential Mode (bit 7/6 = 01); also enable HOLD (bit 0 = 0).
-  clear_bit_CS_RAM(); // Chip Select RAM
+  start_CS_RAM(); // Chip Select RAM
   byte_SPI(RAM_WRSR); // Write Status Register
   byte_SPI(RAM_SEQUENTIAL_MODE | RAM_DISABLE_HOLD);
-  set_bit_CS_RAM(); // Chip unSelect RAM
+  stop_CS_RAM(); // Chip unSelect RAM
 
   /* The Flash is not configured, the forth code must take care of it using
    * the `spi_flash` instruction.
@@ -421,9 +443,9 @@ inline void spi_init() {
 
 inline void spi_start( cell target ) {
   if( target & ADDR_FLASH ) {
-    clear_bit_CS_FLASH();
+    start_CS_FLASH();
   } else {
-    clear_bit_CS_RAM();
+    start_CS_RAM();
   }
 }
 
@@ -436,8 +458,8 @@ void spi_address( cell target ) {
 }
 
 inline void spi_stop() {
-  set_bit_CS_RAM();
-  set_bit_CS_FLASH();
+  stop_CS_RAM();
+  stop_CS_FLASH();
 }
 
 typedef enum {
@@ -640,6 +662,7 @@ int main() {
   external_pointer ip = 0;
 
   while(1) {
+
     /* On interrupt we save the current ip pointer and proceed to the interrupt vector. */
     ATOMIC_BLOCK(ATOMIC_FORCEON) {
       if(forth_interrupt) {
@@ -827,12 +850,12 @@ int main() {
             spi_read(buffer,c,b);
             /* Execute the command */
             ATOMIC_BLOCK(ATOMIC_FORCEON) {
-              clear_bit_CS_FLASH();
+              start_CS_FLASH();
               while(c--) {
                 *source = byte_SPI(*source);
                 source++;
               }
-              set_bit_CS_FLASH();
+              stop_CS_FLASH();
             }
             /* Write the output back */
             spi_write(buffer,c,b);

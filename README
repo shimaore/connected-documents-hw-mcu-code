@@ -1,4 +1,3 @@
-
 Pins assignments
 
 Base:
@@ -7,21 +6,21 @@ Base:
   - need two ports for chip select of RAM / Flash
 
 
-  1   PA2
+  1   PA2 (\_RESET\_ / MCU-\_CS\_)
   2   RxD (USART)
   3   TxD (USART)
   4   XTAL2 (Output)
   5   XTAL1 (Input)
-  6   XCK?
-  7
-  8
-  9   OC0B (PWM 8 bits)
+  6   RAM-\_CS\_
+  7   FLASH-\_CS\_
+  8   RUN
+  9
   10  GND
   11
   12
   13
-  14  OC0A
-  15  OC1A
+  14
+  15
   16  OC1B (PWM)
   17  DI (USI three-wire)
   18  DO (USI three-wire)
